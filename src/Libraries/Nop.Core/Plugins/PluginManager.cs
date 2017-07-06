@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Threading;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Nop.Core.ComponentModel;
+using Nop.Core.Extensions;
 
 //Contributor: Umbraco (http://www.umbraco.com). Thanks a lot! 
 //SEE THIS POST for full details of what this does - http://shazwazza.com/post/Developing-a-plugin-framework-in-ASPNET-with-medium-trust.aspx
@@ -30,6 +31,18 @@ namespace Nop.Core.Plugins
 
         private static readonly ReaderWriterLockSlim Locker = new ReaderWriterLockSlim();
         private static DirectoryInfo _shadowCopyFolder;
+        private static readonly IList<string> BaseAppLibraries;
+
+        #endregion
+
+        #region Ctor
+
+        static PluginManager()
+        {
+            //get all libraries from base directory
+            BaseAppLibraries = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory)
+                .GetFiles("*.dll", SearchOption.TopDirectoryOnly).Select(fi => fi.Name).ToList();
+        }
 
         #endregion
 
@@ -96,8 +109,10 @@ namespace Nop.Core.Plugins
                         }
                     }
 
+                    //get target framework output path prefix
+                    var outputPathPrefix = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory).Name;
                     //load description files
-                    foreach (var dfd in GetDescriptionFilesAndDescriptors(pluginFolder))
+                    foreach (var dfd in GetDescriptionFilesAndDescriptors(pluginFolder, outputPathPrefix))
                     {
                         var descriptionFile = dfd.Key;
                         var pluginDescriptor = dfd.Value;
@@ -127,7 +142,7 @@ namespace Nop.Core.Plugins
                             var pluginFiles = descriptionFile.Directory.GetFiles("*.dll", SearchOption.AllDirectories)
                                 //just make sure we're not registering shadow copied plugins
                                 .Where(x => !binFiles.Select(q => q.FullName).Contains(x.FullName))
-                                .Where(x => IsPackagePluginFolder(x.Directory))
+                                .Where(x => IsPackagePluginFolder(x.Directory, outputPathPrefix))
                                 .ToList();
 
                             //other plugin description info
@@ -209,7 +224,6 @@ namespace Nop.Core.Plugins
                     //we use 'using' to close the file after it's created
                 }
 
-
             var installedPluginSystemNames = PluginFileParser.ParseInstalledPluginsFile(GetInstalledPluginsFilePath());
             bool alreadyMarkedAsInstalled = installedPluginSystemNames
                                 .FirstOrDefault(x => x.Equals(systemName, StringComparison.InvariantCultureIgnoreCase)) != null;
@@ -278,18 +292,20 @@ namespace Nop.Core.Plugins
         /// Get description files
         /// </summary>
         /// <param name="pluginFolder">Plugin directory info</param>
+        /// <param name="outputPathPrefix">Target framework output path prefix</param>
         /// <returns>Original and parsed description files</returns>
-        private static IEnumerable<KeyValuePair<FileInfo, PluginDescriptor>> GetDescriptionFilesAndDescriptors(DirectoryInfo pluginFolder)
+        private static IEnumerable<KeyValuePair<FileInfo, PluginDescriptor>> GetDescriptionFilesAndDescriptors(DirectoryInfo pluginFolder, string outputPathPrefix)
         {
             if (pluginFolder == null)
                 throw new ArgumentNullException("pluginFolder");
 
             //create list (<file info, parsed plugin descritor>)
             var result = new List<KeyValuePair<FileInfo, PluginDescriptor>>();
+            
             //add display order and path to list
             foreach (var descriptionFile in pluginFolder.GetFiles("Description.txt", SearchOption.AllDirectories))
             {
-                if (!IsPackagePluginFolder(descriptionFile.Directory))
+                if (!IsPackagePluginFolder(descriptionFile.Directory, outputPathPrefix))
                     continue;
 
                 //parse file
@@ -312,6 +328,11 @@ namespace Nop.Core.Plugins
         /// <returns>Result</returns>
         private static bool IsAlreadyLoaded(FileInfo fileInfo)
         {
+            //search library file name in base directory for suppress copy library from plugins path
+            //(we did this because not all libraries load immediately after application run)
+            if (BaseAppLibraries.Any(sli => sli.Equals(fileInfo.Name, StringComparison.InvariantCultureIgnoreCase)))
+                return true;
+
             //compare full assembly name
             //var fileAssemblyName = AssemblyName.GetAssemblyName(fileInfo.FullName);
             //foreach (var a in AppDomain.CurrentDomain.GetAssemblies())
@@ -478,17 +499,25 @@ namespace Nop.Core.Plugins
 
             return shadowCopiedPlug;
         }
-        
+
         /// <summary>
         /// Determines if the folder is a bin plugin folder for a package
         /// </summary>
         /// <param name="folder"></param>
+        /// <param name="outputPathPrefix">Target framework output path prefix</param>
         /// <returns></returns>
-        private static bool IsPackagePluginFolder(DirectoryInfo folder)
+        private static bool IsPackagePluginFolder(DirectoryInfo folder, string outputPathPrefix)
         {
             if (folder == null) return false;
             if (folder.Parent == null) return false;
-            if (!folder.Parent.Name.Equals("Plugins", StringComparison.InvariantCultureIgnoreCase)) return false;
+            if (folder.Name.Equals(outputPathPrefix, StringComparison.InvariantCultureIgnoreCase))
+            {
+                if (!folder.Parent.Return(p => p.Parent, folder.Parent).Name.Equals("Plugins", StringComparison.InvariantCultureIgnoreCase)) return false;
+            }
+            else
+            {
+                if (!folder.Parent.Name.Equals("Plugins", StringComparison.InvariantCultureIgnoreCase)) return false;
+            }
             return true;
         }
 
